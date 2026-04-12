@@ -17,7 +17,7 @@ CHANNEL_USERNAME = "@kaifsalmaniii"
 UPI_ID = "kaifsalmani@ptyes"
 DEV_URL = "https://kaifsalmani-donation.blogspot.com/?m=1"
 HELP_USER = "@KaifSalmanii"
-BOT_USERNAME = "KayfHostBot" # Apne bot ka username yahan sahi likhein
+BOT_USERNAME = "KayfHostBot" 
 
 bot = Bot(token=TELEGRAM_TOKEN)
 dp = Dispatcher()
@@ -99,16 +99,16 @@ async def guide_menu(callback: types.CallbackQuery):
     guide_text = (
         "📖 **KayfHost User Guide**\n\n"
         "1️⃣ **Create Project:** Button par click karein aur project ka ek unique naam dein.\n"
-        "2️⃣ **main.py:** Apni bot ki main file bhejein (file ka naam main.py hona zaroori nahi, par bot wahi se start hoga).\n"
+        "2️⃣ **main.py:** Apni bot ki main file bhejein.\n"
         "3️⃣ **requirements.txt:** Saari libraries ki list bhejein.\n"
         "4️⃣ **Wait:** 2 minute mein aapka bot Hugging Face par live ho jayega.\n\n"
         "⚠️ **Note:** Hum automatically 'Flask Heartbeat' add karte hain taaki bot 24/7 chalta rahe."
     )
     msg = await callback.message.answer(guide_text)
-    asyncio.create_task(delete_after(msg, 60)) # 1 minute baad guide delete
+    asyncio.create_task(delete_after(msg, 60)) 
     await callback.answer()
 
-# --- [ DONATION & QR (Auto-Delete) ] ---
+# --- [ DONATION & QR ] ---
 @dp.callback_query(F.data == "donate")
 async def donate_menu(callback: types.CallbackQuery):
     qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=upi://pay?pa={UPI_ID}&pn=KayfHost%20Dev"
@@ -116,7 +116,7 @@ async def donate_menu(callback: types.CallbackQuery):
         photo=qr_url, 
         caption=f"☕ **Support Kaif Salmani**\n\nUPI ID: `{UPI_ID}`\n\n*Yeh message 2 minute mein auto-delete ho jayega.*"
     )
-    asyncio.create_task(delete_after(msg, 120)) # 2 mins (120 sec) baad QR delete
+    asyncio.create_task(delete_after(msg, 120))
     await callback.answer()
 
 # --- [ PROJECT MANAGEMENT ] ---
@@ -147,10 +147,10 @@ async def handle_delete(callback: types.CallbackQuery):
         await callback.message.edit_text(f"✅ {proj_name} Successfully Deleted!")
         await asyncio.sleep(5)
         await callback.message.delete()
-    exceptException as e:
+    except Exception as e: # FIXED THE TYPO HERE
         await callback.answer(f"❌ Error: {str(e)}", show_alert=True)
 
-# --- [ DEPLOYMENT LOGIC (With Auto-Delete) ] ---
+# --- [ DEPLOYMENT LOGIC ] ---
 @dp.callback_query(F.data == "new_proj")
 async def start_new(callback: types.CallbackQuery, state: FSMContext):
     msg = await callback.message.answer("📝 Project ka Naam batayein:")
@@ -161,9 +161,9 @@ async def start_new(callback: types.CallbackQuery, state: FSMContext):
 @dp.message(ProjectFlow.waiting_for_name)
 async def get_name(message: types.Message, state: FSMContext):
     data = await state.get_data()
-    try: await bot.delete_message(message.chat.id, data['last_msg_id']) # Purana msg delete
+    try: await bot.delete_message(message.chat.id, data['last_msg_id'])
     except: pass
-    await message.delete() # User ka bheja hua naam delete
+    await message.delete()
 
     await state.update_data(p_name=message.text)
     msg = await message.answer(f"📤 Project **'{message.text}'** ke liye apni **main.py** file bhejein:")
@@ -229,4 +229,4 @@ def home(): return "KayfHost Master Running!"
 if __name__ == "__main__":
     Thread(target=lambda: app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 8080)))).start()
     asyncio.run(dp.start_polling(bot))
-        
+    
