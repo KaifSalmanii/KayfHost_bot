@@ -13,10 +13,11 @@ from threading import Thread
 # --- [ CONFIG & CREDENTIALS ] ---
 TELEGRAM_TOKEN = os.environ.get('BOT_TOKEN')
 HF_TOKEN = os.environ.get('HF_TOKEN')
-CHANNEL_USERNAME = "@kaifsalmaniii"  # Aapka Channel
-UPI_ID = "kaifsalmani@ptyes"         # Aapki UPI
+CHANNEL_USERNAME = "@kaifsalmaniii"
+UPI_ID = "kaifsalmani@ptyes"
 DEV_URL = "https://kaifsalmani-donation.blogspot.com/?m=1"
 HELP_USER = "@KaifSalmanii"
+BOT_USERNAME = "KayfHostBot" # Apne bot ka username yahan sahi likhein
 
 bot = Bot(token=TELEGRAM_TOKEN)
 dp = Dispatcher()
@@ -41,6 +42,14 @@ class ProjectFlow(StatesGroup):
     waiting_for_py = State()
     waiting_for_req = State()
 
+# --- [ HELPER: AUTO DELETE MESSAGE ] ---
+async def delete_after(message: types.Message, delay: int):
+    await asyncio.sleep(delay)
+    try:
+        await message.delete()
+    except:
+        pass
+
 # --- [ HELPER: FORCE SUB CHECK ] ---
 async def check_sub(user_id):
     try:
@@ -55,9 +64,13 @@ def get_main_menu():
     builder.row(InlineKeyboardButton(text="📁 My Projects", callback_data="my_proj"))
     builder.row(
         InlineKeyboardButton(text="💰 Donate", callback_data="donate"),
-        InlineKeyboardButton(text="👨‍💻 Dev", url=DEV_URL),
-        InlineKeyboardButton(text="❓ Help", url=f"https://t.me/{HELP_USER[1:]}")
+        InlineKeyboardButton(text="📖 Guide", callback_data="guide")
     )
+    builder.row(
+        InlineKeyboardButton(text="📤 Share Bot", url=f"https://t.me/share/url?url=https://t.me/{BOT_USERNAME}&text=Best%2024/7%20Free%20Bot%20Hosting%20Platform!%20🚀"),
+        InlineKeyboardButton(text="👨‍💻 Dev", url=DEV_URL)
+    )
+    builder.row(InlineKeyboardButton(text="❓ Help", url=f"https://t.me/{HELP_USER[1:]}"))
     return builder.as_markup()
 
 # --- [ COMMANDS ] ---
@@ -80,11 +93,30 @@ async def verify_sub(callback: types.CallbackQuery):
     else:
         await callback.answer("❌ Pehle join toh kar lo bhai!", show_alert=True)
 
-# --- [ DONATION & QR ] ---
+# --- [ GUIDE OPTION ] ---
+@dp.callback_query(F.data == "guide")
+async def guide_menu(callback: types.CallbackQuery):
+    guide_text = (
+        "📖 **KayfHost User Guide**\n\n"
+        "1️⃣ **Create Project:** Button par click karein aur project ka ek unique naam dein.\n"
+        "2️⃣ **main.py:** Apni bot ki main file bhejein (file ka naam main.py hona zaroori nahi, par bot wahi se start hoga).\n"
+        "3️⃣ **requirements.txt:** Saari libraries ki list bhejein.\n"
+        "4️⃣ **Wait:** 2 minute mein aapka bot Hugging Face par live ho jayega.\n\n"
+        "⚠️ **Note:** Hum automatically 'Flask Heartbeat' add karte hain taaki bot 24/7 chalta rahe."
+    )
+    msg = await callback.message.answer(guide_text)
+    asyncio.create_task(delete_after(msg, 60)) # 1 minute baad guide delete
+    await callback.answer()
+
+# --- [ DONATION & QR (Auto-Delete) ] ---
 @dp.callback_query(F.data == "donate")
 async def donate_menu(callback: types.CallbackQuery):
     qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=upi://pay?pa={UPI_ID}&pn=KayfHost%20Dev"
-    await callback.message.reply_photo(photo=qr_url, caption=f"☕ **Support Kaif Salmani**\n\nUPI ID: `{UPI_ID}`\n\nAapki choti si help project ko 24/7 zinda rakhne mein madad karegi.")
+    msg = await callback.message.reply_photo(
+        photo=qr_url, 
+        caption=f"☕ **Support Kaif Salmani**\n\nUPI ID: `{UPI_ID}`\n\n*Yeh message 2 minute mein auto-delete ho jayega.*"
+    )
+    asyncio.create_task(delete_after(msg, 120)) # 2 mins (120 sec) baad QR delete
     await callback.answer()
 
 # --- [ PROJECT MANAGEMENT ] ---
@@ -93,75 +125,83 @@ async def list_projects(callback: types.CallbackQuery):
     user_id = str(callback.from_user.id)
     db = load_db()
     if user_id not in db or not db[user_id]:
-        return await callback.message.edit_text("❌ Aapka koi project nahi hai.", reply_markup=get_main_menu())
+        msg = await callback.message.answer("❌ Aapka koi project nahi hai.")
+        asyncio.create_task(delete_after(msg, 10))
+        return await callback.answer()
     
     for name, repo_id in db[user_id].items():
         builder = InlineKeyboardBuilder()
-        builder.button(text="⏸ Pause", callback_data=f"pause_{name}")
-        builder.button(text="▶️ Play", callback_data=f"play_{name}")
         builder.button(text="🗑 Delete", callback_data=f"del_{name}")
         await callback.message.answer(f"📦 **Project:** {name}\n🔗 ID: `{repo_id}`", reply_markup=builder.as_markup())
     await callback.answer()
 
-@dp.callback_query(F.data.startswith(("pause_", "play_", "del_")))
-async def handle_actions(callback: types.CallbackQuery):
-    action, proj_name = callback.data.split("_")
+@dp.callback_query(F.data.startswith("del_"))
+async def handle_delete(callback: types.CallbackQuery):
+    proj_name = callback.data.split("_")[1]
     user_id = str(callback.from_user.id)
     db = load_db()
-    repo_id = db[user_id][proj_name]
-
     try:
-        if action == "del":
-            hf_api.delete_repo(repo_id=repo_id, repo_type="space")
-            del db[user_id][proj_name]
-            save_db(db)
-            await callback.message.edit_text(f"✅ {proj_name} Delete ho gaya!")
-        elif action == "pause":
-            hf_api.pause_space(repo_id=repo_id)
-            await callback.answer(f"⏸ {proj_name} Paused.")
-        elif action == "play":
-            hf_api.request_space_hardware(repo_id=repo_id, hardware="cpu-basic")
-            await callback.answer(f"▶️ {proj_name} Resuming...")
-    except Exception as e:
+        hf_api.delete_repo(repo_id=db[user_id][proj_name], repo_type="space")
+        del db[user_id][proj_name]
+        save_db(db)
+        await callback.message.edit_text(f"✅ {proj_name} Successfully Deleted!")
+        await asyncio.sleep(5)
+        await callback.message.delete()
+    exceptException as e:
         await callback.answer(f"❌ Error: {str(e)}", show_alert=True)
 
-# --- [ DEPLOYMENT LOGIC ] ---
+# --- [ DEPLOYMENT LOGIC (With Auto-Delete) ] ---
 @dp.callback_query(F.data == "new_proj")
 async def start_new(callback: types.CallbackQuery, state: FSMContext):
-    await callback.message.reply("📝 Project ka Naam batayein:")
+    msg = await callback.message.answer("📝 Project ka Naam batayein:")
+    await state.update_data(last_msg_id=msg.message_id)
     await state.set_state(ProjectFlow.waiting_for_name)
     await callback.answer()
 
 @dp.message(ProjectFlow.waiting_for_name)
 async def get_name(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    try: await bot.delete_message(message.chat.id, data['last_msg_id']) # Purana msg delete
+    except: pass
+    await message.delete() # User ka bheja hua naam delete
+
     await state.update_data(p_name=message.text)
-    await message.reply("📤 Apni **main.py** file bhejein:")
+    msg = await message.answer(f"📤 Project **'{message.text}'** ke liye apni **main.py** file bhejein:")
+    await state.update_data(last_msg_id=msg.message_id)
     await state.set_state(ProjectFlow.waiting_for_py)
 
 @dp.message(ProjectFlow.waiting_for_py, F.document)
 async def get_py(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    try: await bot.delete_message(message.chat.id, data['last_msg_id'])
+    except: pass
+    await message.delete()
+
     file = await bot.get_file(message.document.file_id)
     await bot.download_file(file.file_path, "/tmp/main.py")
-    await message.reply("📑 Ab **requirements.txt** bhejein:")
+    msg = await message.answer("📑 Ab **requirements.txt** bhejein:")
+    await state.update_data(last_msg_id=msg.message_id)
     await state.set_state(ProjectFlow.waiting_for_req)
 
 @dp.message(ProjectFlow.waiting_for_req, F.document)
 async def get_req_and_deploy(message: types.Message, state: FSMContext):
-    msg = await message.reply("⚙️ Deploying... Please wait.")
+    data = await state.get_data()
+    try: await bot.delete_message(message.chat.id, data['last_msg_id'])
+    except: pass
+    await message.delete()
+
+    deploy_msg = await message.answer("⚙️ Deploying... Please wait.")
     file = await bot.get_file(message.document.file_id)
     await bot.download_file(file.file_path, "/tmp/requirements.txt")
     
-    u_data = await state.get_data()
-    p_name, u_id = u_data['p_name'], str(message.from_user.id)
+    p_name, u_id = data['p_name'], str(message.from_user.id)
     db = load_db()
     
     try:
         user_name = hf_api.whoami()['name']
         repo_id = f"{user_name}/u{u_id}-{p_name.replace(' ', '')}"
-        
         hf_api.create_repo(repo_id=repo_id, repo_type="space", space_sdk="docker", exist_ok=True)
         
-        # --- [ HEARTBEAT & DOCKER FIX ] ---
         docker_content = 'FROM python:3.9-slim\nWORKDIR /app\nCOPY requirements.txt .\nRUN pip install --no-cache-dir -r requirements.txt flask\nCOPY . .\nEXPOSE 7860\nCMD ["python", "main.py"]'
         with open("/tmp/Dockerfile", "w") as f: f.write(docker_content)
         
@@ -169,16 +209,16 @@ async def get_req_and_deploy(message: types.Message, state: FSMContext):
         hb = "import threading\nfrom flask import Flask\napp = Flask(__name__)\n@app.route('/')\ndef h(): return 'OK'\nthreading.Thread(target=lambda: app.run(host='0.0.0.0', port=7860), daemon=True).start()\n"
         with open("/tmp/main.py", "w") as f: f.write(hb + old_code)
         
-        # Upload
-        for f in ["main.py", "requirements.txt", "Dockerfile"]:
-            hf_api.upload_file(path_or_fileobj=f"/tmp/{f}", path_in_repo=f, repo_id=repo_id, repo_type="space")
+        for f_name in ["main.py", "requirements.txt", "Dockerfile"]:
+            hf_api.upload_file(path_or_fileobj=f"/tmp/{f_name}", path_in_repo=f_name, repo_id=repo_id, repo_type="space")
         
         if u_id not in db: db[u_id] = {}
         db[u_id][p_name] = repo_id
         save_db(db)
-        await msg.edit_text(f"🚀 **{p_name}** Live ho gaya!")
+        await deploy_msg.edit_text(f"🚀 **{p_name}** Live ho gaya!\n\nYeh message 1 minute mein delete ho jayega.")
+        asyncio.create_task(delete_after(deploy_msg, 60))
     except Exception as e:
-        await msg.edit_text(f"❌ Failed: {str(e)}")
+        await deploy_msg.edit_text(f"❌ Failed: {str(e)}")
     await state.clear()
 
 # --- [ SERVER ] ---
@@ -189,3 +229,4 @@ def home(): return "KayfHost Master Running!"
 if __name__ == "__main__":
     Thread(target=lambda: app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 8080)))).start()
     asyncio.run(dp.start_polling(bot))
+        
