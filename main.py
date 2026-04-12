@@ -5,14 +5,18 @@ from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
-from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.utils.keyboard import InlineKeyboardBuilder, InlineKeyboardButton
 from huggingface_hub import HfApi
 from flask import Flask
 from threading import Thread
 
-# --- [ CREDENTIALS & SETUP ] ---
+# --- [ CONFIG & CREDENTIALS ] ---
 TELEGRAM_TOKEN = os.environ.get('BOT_TOKEN')
 HF_TOKEN = os.environ.get('HF_TOKEN')
+CHANNEL_USERNAME = "@kaifsalmaniii"  # Aapka Channel
+UPI_ID = "kaifsalmani@ptyes"         # Aapki UPI
+DEV_URL = "https://kaifsalmani-donation.blogspot.com/?m=1"
+HELP_USER = "@KaifSalmanii"
 
 bot = Bot(token=TELEGRAM_TOKEN)
 dp = Dispatcher()
@@ -24,146 +28,164 @@ DB_FILE = "database.json"
 def load_db():
     if os.path.exists(DB_FILE):
         try:
-            with open(DB_FILE, "r") as f: 
-                return json.load(f)
-        except json.JSONDecodeError:
-            return {}
+            with open(DB_FILE, "r") as f: return json.load(f)
+        except: return {}
     return {}
 
 def save_db(data):
-    with open(DB_FILE, "w") as f: 
-        json.dump(data, f, indent=4)
+    with open(DB_FILE, "w") as f: json.dump(data, f, indent=4)
 
-# --- [ FSM STATES (Bot ki Memory) ] ---
+# --- [ FSM STATES ] ---
 class ProjectFlow(StatesGroup):
     waiting_for_name = State()
     waiting_for_py = State()
     waiting_for_req = State()
 
-# --- [ 1. START MENU ] ---
+# --- [ HELPER: FORCE SUB CHECK ] ---
+async def check_sub(user_id):
+    try:
+        member = await bot.get_chat_member(chat_id=CHANNEL_USERNAME, user_id=user_id)
+        return member.status in ['member', 'administrator', 'creator']
+    except: return False
+
+# --- [ KEYBOARDS ] ---
+def get_main_menu():
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="🆕 Create Project", callback_data="new_proj"))
+    builder.row(InlineKeyboardButton(text="📁 My Projects", callback_data="my_proj"))
+    builder.row(
+        InlineKeyboardButton(text="💰 Donate", callback_data="donate"),
+        InlineKeyboardButton(text="👨‍💻 Dev", url=DEV_URL),
+        InlineKeyboardButton(text="❓ Help", url=f"https://t.me/{HELP_USER[1:]}")
+    )
+    return builder.as_markup()
+
+# --- [ COMMANDS ] ---
 @dp.message(CommandStart())
 async def start_cmd(message: types.Message, state: FSMContext):
-    await state.clear() # Purani memory saaf karna
-    builder = InlineKeyboardBuilder()
-    builder.button(text="🆕 Create New Project", callback_data="new_proj")
-    builder.button(text="📂 My Projects", callback_data="my_proj")
+    await state.clear()
+    is_joined = await check_sub(message.from_user.id)
+    if not is_joined:
+        builder = InlineKeyboardBuilder()
+        builder.button(text="📢 Join Channel", url=f"https://t.me/{CHANNEL_USERNAME[1:]}")
+        builder.button(text="✅ Check Joined", callback_data="verify_sub")
+        return await message.reply("🛑 **Access Denied!**\n\nBot use karne ke liye pehle hamara channel join karein.", reply_markup=builder.as_markup())
     
-    await message.reply("🔥 Welcome to **KayfHost**!\n\nAapka apna auto-hosting platform. Kya karna chahte hain?", reply_markup=builder.as_markup())
+    await message.reply(f"🔥 **Welcome to KayfHost!**\nDeveloped by Kaif Salmani.\n\nNiche diye gaye buttons se project manage karein:", reply_markup=get_main_menu())
 
-# --- [ 2. SHOW EXISTING PROJECTS ] ---
+@dp.callback_query(F.data == "verify_sub")
+async def verify_sub(callback: types.CallbackQuery):
+    if await check_sub(callback.from_user.id):
+        await callback.message.edit_text("✅ Verification Successful! Welcome.", reply_markup=get_main_menu())
+    else:
+        await callback.answer("❌ Pehle join toh kar lo bhai!", show_alert=True)
+
+# --- [ DONATION & QR ] ---
+@dp.callback_query(F.data == "donate")
+async def donate_menu(callback: types.CallbackQuery):
+    qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=upi://pay?pa={UPI_ID}&pn=KayfHost%20Dev"
+    await callback.message.reply_photo(photo=qr_url, caption=f"☕ **Support Kaif Salmani**\n\nUPI ID: `{UPI_ID}`\n\nAapki choti si help project ko 24/7 zinda rakhne mein madad karegi.")
+    await callback.answer()
+
+# --- [ PROJECT MANAGEMENT ] ---
 @dp.callback_query(F.data == "my_proj")
-async def show_projects(callback: types.CallbackQuery):
+async def list_projects(callback: types.CallbackQuery):
     user_id = str(callback.from_user.id)
     db = load_db()
+    if user_id not in db or not db[user_id]:
+        return await callback.message.edit_text("❌ Aapka koi project nahi hai.", reply_markup=get_main_menu())
     
-    if user_id in db and db[user_id]:
-        proj_list = "\n".join([f"🔹 {name}" for name in db[user_id].keys()])
-        await callback.message.edit_text(f"📂 **Aapke Projects:**\n\n{proj_list}\n\nUpdate karne ke liye bas naya project banayein aur **same naam** daalein.")
-    else:
-        await callback.message.edit_text("❌ Aapka koi active project nahi hai. Pehle 'Create New Project' par click karein.")
+    for name, repo_id in db[user_id].items():
+        builder = InlineKeyboardBuilder()
+        builder.button(text="⏸ Pause", callback_data=f"pause_{name}")
+        builder.button(text="▶️ Play", callback_data=f"play_{name}")
+        builder.button(text="🗑 Delete", callback_data=f"del_{name}")
+        await callback.message.answer(f"📦 **Project:** {name}\n🔗 ID: `{repo_id}`", reply_markup=builder.as_markup())
+    await callback.answer()
 
-# --- [ 3. NEW PROJECT CLICKED ] ---
+@dp.callback_query(F.data.startswith(("pause_", "play_", "del_")))
+async def handle_actions(callback: types.CallbackQuery):
+    action, proj_name = callback.data.split("_")
+    user_id = str(callback.from_user.id)
+    db = load_db()
+    repo_id = db[user_id][proj_name]
+
+    try:
+        if action == "del":
+            hf_api.delete_repo(repo_id=repo_id, repo_type="space")
+            del db[user_id][proj_name]
+            save_db(db)
+            await callback.message.edit_text(f"✅ {proj_name} Delete ho gaya!")
+        elif action == "pause":
+            hf_api.pause_space(repo_id=repo_id)
+            await callback.answer(f"⏸ {proj_name} Paused.")
+        elif action == "play":
+            hf_api.request_space_hardware(repo_id=repo_id, hardware="cpu-basic")
+            await callback.answer(f"▶️ {proj_name} Resuming...")
+    except Exception as e:
+        await callback.answer(f"❌ Error: {str(e)}", show_alert=True)
+
+# --- [ DEPLOYMENT LOGIC ] ---
 @dp.callback_query(F.data == "new_proj")
-async def ask_project_name(callback: types.CallbackQuery, state: FSMContext):
-    await callback.message.edit_text("📝 Apne project ka naam batao (e.g., PromoBot):")
+async def start_new(callback: types.CallbackQuery, state: FSMContext):
+    await callback.message.reply("📝 Project ka Naam batayein:")
     await state.set_state(ProjectFlow.waiting_for_name)
+    await callback.answer()
 
-# --- [ 4. SAVE NAME & ASK .PY ] ---
 @dp.message(ProjectFlow.waiting_for_name)
-async def ask_for_py(message: types.Message, state: FSMContext):
-    project_name = message.text
-    await state.update_data(proj_name=project_name)
-    
-    await message.reply(f"Great! Ab apne '{project_name}' ki **main.py** file bhejo.")
+async def get_name(message: types.Message, state: FSMContext):
+    await state.update_data(p_name=message.text)
+    await message.reply("📤 Apni **main.py** file bhejein:")
     await state.set_state(ProjectFlow.waiting_for_py)
 
-# --- [ 5. RECEIVE .PY & ASK REQ.TXT ] ---
 @dp.message(ProjectFlow.waiting_for_py, F.document)
-async def ask_for_req(message: types.Message, state: FSMContext):
-    if not message.document.file_name.endswith('.py'):
-        await message.reply("❌ Sirf .py files allow hain! Dobara bhejo.")
-        return
-        
-    file_id = message.document.file_id
-    file = await bot.get_file(file_id)
-    download_path = f"/tmp/main.py"
-    await bot.download_file(file.file_path, download_path)
-    
-    await message.reply("✅ Code received! Ab iski **requirements.txt** file bhejo.")
+async def get_py(message: types.Message, state: FSMContext):
+    file = await bot.get_file(message.document.file_id)
+    await bot.download_file(file.file_path, "/tmp/main.py")
+    await message.reply("📑 Ab **requirements.txt** bhejein:")
     await state.set_state(ProjectFlow.waiting_for_req)
 
-# --- [ 6. RECEIVE REQ & DEPLOY ] ---
 @dp.message(ProjectFlow.waiting_for_req, F.document)
-async def final_deploy(message: types.Message, state: FSMContext):
-    if not message.document.file_name.endswith('.txt'):
-        await message.reply("❌ Sirf .txt file allow hai! Dobara bhejo.")
-        return
-
-    msg = await message.reply("⚙️ Aapka code secure server par deploy ho raha hai... Please wait.")
+async def get_req_and_deploy(message: types.Message, state: FSMContext):
+    msg = await message.reply("⚙️ Deploying... Please wait.")
+    file = await bot.get_file(message.document.file_id)
+    await bot.download_file(file.file_path, "/tmp/requirements.txt")
     
-    # Download requirements.txt
-    file_id = message.document.file_id
-    file = await bot.get_file(file_id)
-    req_path = f"/tmp/requirements.txt"
-    await bot.download_file(file.file_path, req_path)
-    
-    user_data = await state.get_data()
-    project_name = user_data['proj_name']
-    user_id = str(message.from_user.id)
-    
+    u_data = await state.get_data()
+    p_name, u_id = u_data['p_name'], str(message.from_user.id)
     db = load_db()
     
     try:
-        username = hf_api.whoami()['name']
+        user_name = hf_api.whoami()['name']
+        repo_id = f"{user_name}/u{u_id}-{p_name.replace(' ', '')}"
         
-        # Check if project exists (Update logic)
-        if user_id in db and project_name in db[user_id]:
-            repo_id = db[user_id][project_name]
-            await msg.edit_text("🔄 Existing project mila. System ko update kiya ja raha hai...")
-        else:
-            # Create new project space
-            space_name = f"u{user_id}-{project_name.replace(' ', '')}"
-            repo_id = f"{username}/{space_name}"
-            hf_api.create_repo(repo_id=repo_id, repo_type="space", space_sdk="docker", exist_ok=True)
-            
-            # Save to Database
-            if user_id not in db: 
-                db[user_id] = {}
-            db[user_id][project_name] = repo_id
-            save_db(db)
-            
-            # Upload Dockerfile (Silent backend work)
-            docker_content = 'FROM python:3.9-slim\nRUN useradd -m -u 1000 user\nUSER user\nENV PATH="/home/user/.local/bin:${PATH}"\nWORKDIR /app\nCOPY --chown=user requirements.txt .\nRUN pip install --no-cache-dir -r requirements.txt\nCOPY --chown=user . .\nCMD ["python", "main.py"]'
-            with open("/tmp/Dockerfile", "w") as f: 
-                f.write(docker_content)
-            hf_api.upload_file(path_or_fileobj="/tmp/Dockerfile", path_in_repo="Dockerfile", repo_id=repo_id, repo_type="space")
-
-        # Upload main.py and requirements.txt
-        hf_api.upload_file(path_or_fileobj="/tmp/main.py", path_in_repo="main.py", repo_id=repo_id, repo_type="space")
-        hf_api.upload_file(path_or_fileobj=req_path, path_in_repo="requirements.txt", repo_id=repo_id, repo_type="space")
+        hf_api.create_repo(repo_id=repo_id, repo_type="space", space_sdk="docker", exist_ok=True)
         
-        await msg.edit_text(f"✅ **Deployment Successful!**\n\n🚀 Aapka project **'{project_name}'** live ho chuka hai. Ise fully start hone mein 2-3 minute lagenge.")
+        # --- [ HEARTBEAT & DOCKER FIX ] ---
+        docker_content = 'FROM python:3.9-slim\nWORKDIR /app\nCOPY requirements.txt .\nRUN pip install --no-cache-dir -r requirements.txt flask\nCOPY . .\nEXPOSE 7860\nCMD ["python", "main.py"]'
+        with open("/tmp/Dockerfile", "w") as f: f.write(docker_content)
         
+        with open("/tmp/main.py", "r") as f: old_code = f.read()
+        hb = "import threading\nfrom flask import Flask\napp = Flask(__name__)\n@app.route('/')\ndef h(): return 'OK'\nthreading.Thread(target=lambda: app.run(host='0.0.0.0', port=7860), daemon=True).start()\n"
+        with open("/tmp/main.py", "w") as f: f.write(hb + old_code)
+        
+        # Upload
+        for f in ["main.py", "requirements.txt", "Dockerfile"]:
+            hf_api.upload_file(path_or_fileobj=f"/tmp/{f}", path_in_repo=f, repo_id=repo_id, repo_type="space")
+        
+        if u_id not in db: db[u_id] = {}
+        db[u_id][p_name] = repo_id
+        save_db(db)
+        await msg.edit_text(f"🚀 **{p_name}** Live ho gaya!")
     except Exception as e:
-        await msg.edit_text(f"❌ Deployment Failed: {str(e)}")
-    
-    finally:
-        await state.clear()
+        await msg.edit_text(f"❌ Failed: {str(e)}")
+    await state.clear()
 
-# --- [ WEB SERVER FOR RENDER 24/7 UPTIME ] ---
+# --- [ SERVER ] ---
 app = Flask(__name__)
-
 @app.route('/')
-def home():
-    return "KayfHost Master Engine is Running smoothly! 🚀"
-
-def run_web():
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host='0.0.0.0', port=port)
-
-async def main():
-    Thread(target=run_web).start()
-    await dp.start_polling(bot)
+def home(): return "KayfHost Master Running!"
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    Thread(target=lambda: app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 8080)))).start()
+    asyncio.run(dp.start_polling(bot))
