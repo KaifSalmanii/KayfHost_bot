@@ -1,0 +1,3 @@
+aiogram
+huggingface_hub
+flask
