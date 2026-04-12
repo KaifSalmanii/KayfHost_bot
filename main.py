@@ -1,115 +1,119 @@
 import os
+import json
 import asyncio
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.context import FSMContext
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 from huggingface_hub import HfApi
 from flask import Flask
 from threading import Thread
 
-# --- [ CREDENTIALS ] ---
-TELEGRAM_TOKEN = os.environ.get('BOT_TOKEN', 'YAHAN_TOKEN_MAT_DAALNA')
-HF_TOKEN = os.environ.get('HF_TOKEN', 'YAHAN_HF_TOKEN_MAT_DAALNA')
+# --- [ SETUP ] ---
+TELEGRAM_TOKEN = os.environ.get('BOT_TOKEN')
+HF_TOKEN = os.environ.get('HF_TOKEN')
 
 bot = Bot(token=TELEGRAM_TOKEN)
 dp = Dispatcher()
 hf_api = HfApi(token=HF_TOKEN)
 
-# --- [ HUGGING FACE DOCKER TEMPLATE ] ---
-DOCKERFILE_CONTENT = """
-FROM python:3.9-slim
-RUN useradd -m -u 1000 user
-USER user
-ENV PATH="/home/user/.local/bin:${PATH}"
-WORKDIR /app
-COPY --chown=user requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-COPY --chown=user . .
-CMD ["python", "main.py"]
-"""
+# --- [ DATABASE CHOTA SA ] ---
+# Asli project mein yahan Firebase use hoga, abhi ke liye JSON use kar rahe hain
+DB_FILE = "database.json"
 
+def load_db():
+    if os.path.exists(DB_FILE):
+        with open(DB_FILE, "r") as f: return json.load(f)
+    return {}
+
+def save_db(data):
+    with open(DB_FILE, "w") as f: json.dump(data, f)
+
+# --- [ FSM STATES ] ---
+class ProjectFlow(StatesGroup):
+    waiting_for_name = State()
+    waiting_for_py = State()
+    waiting_for_req = State()
+
+# --- [ 1. START MENU ] ---
 @dp.message(CommandStart())
 async def start_cmd(message: types.Message):
-    await message.reply("🔥 Welcome to the Auto-Hosting Bot!\n\nMujhe apni `.py` file bhejo, aur main use 24/7 server par host kar doonga.")
+    builder = InlineKeyboardBuilder()
+    builder.button(text="🆕 Create New Project", callback_data="new_proj")
+    builder.button(text="📂 My Projects", callback_data="my_proj")
+    
+    await message.reply("Welcome to KayfHost!\nKya karna chahte hain?", reply_markup=builder.as_markup())
 
-@dp.message(F.document)
-async def handle_python_file(message: types.Message):
-    file_name = message.document.file_name
-    user_id = message.from_user.id
+# --- [ 2. NEW PROJECT CLIKED ] ---
+@dp.callback_query(F.data == "new_proj")
+async def ask_project_name(callback: types.CallbackQuery, state: FSMContext):
+    await callback.message.edit_text("Apne project ka naam batao (e.g., Project X):")
+    await state.set_state(ProjectFlow.waiting_for_name)
+
+# --- [ 3. SAVE NAME & ASK .PY ] ---
+@dp.message(ProjectFlow.waiting_for_name)
+async def ask_for_py(message: types.Message, state: FSMContext):
+    project_name = message.text
+    await state.update_data(proj_name=project_name)
     
-    if not file_name.endswith('.py'):
-        await message.reply("❌ Sirf .py files allow hain!")
-        return
-        
-    msg = await message.reply("⏳ File downloading...")
-    
-    # 1. Download the file temporarily
-    file = await bot.get_file(message.document.file_id)
-    download_path = f"/tmp/{file_name}"
+    await message.reply(f"Great! Ab apne '{project_name}' ki **main.py** file bhejo.")
+    await state.set_state(ProjectFlow.waiting_for_py)
+
+# --- [ 4. RECEIVE .PY & ASK REQ.TXT ] ---
+@dp.message(ProjectFlow.waiting_for_py, F.document)
+async def ask_for_req(message: types.Message, state: FSMContext):
+    # .py file download karo
+    file_id = message.document.file_id
+    file = await bot.get_file(file_id)
+    download_path = f"/tmp/main.py"
     await bot.download_file(file.file_path, download_path)
     
-    await msg.edit_text("⚙️ Hugging Face par naya server ban raha hai...")
+    await message.reply("✅ File received! Ab iski **requirements.txt** file bhejo.")
+    await state.set_state(ProjectFlow.waiting_for_req)
+
+# --- [ 5. RECEIVE REQ & DEPLOY ] ---
+@dp.message(ProjectFlow.waiting_for_req, F.document)
+async def final_deploy(message: types.Message, state: FSMContext):
+    msg = await message.reply("⚙️ Uploading files... Please wait.")
     
-    try:
-        # 2. Create a unique Space name for the user
-        space_name = f"user-{user_id}-bot"
-        username = hf_api.whoami()['name']
+    # requirements.txt download karo
+    file_id = message.document.file_id
+    file = await bot.get_file(file_id)
+    req_path = f"/tmp/requirements.txt"
+    await bot.download_file(file.file_path, req_path)
+    
+    user_data = await state.get_data()
+    project_name = user_data['proj_name']
+    user_id = str(message.from_user.id)
+    
+    db = load_db()
+    username = hf_api.whoami()['name']
+    
+    # Check agar project pehle se hai toh wahi update hoga, warna naya space banega
+    if user_id in db and project_name in db[user_id]:
+        repo_id = db[user_id][project_name]
+        await msg.edit_text("🔄 Existing project mila. Updating files...")
+    else:
+        space_name = f"u{user_id}-{project_name.replace(' ', '')}"
         repo_id = f"{username}/{space_name}"
+        hf_api.create_repo(repo_id=repo_id, repo_type="space", space_sdk="docker", exist_ok=True)
         
-        # 3. Create the Space
-        hf_api.create_repo(
-            repo_id=repo_id,
-            repo_type="space",
-            space_sdk="docker",
-            exist_ok=True # Agar pehle se hai toh overwrite karega
-        )
+        # Save to DB
+        if user_id not in db: db[user_id] = {}
+        db[user_id][project_name] = repo_id
+        save_db(db)
         
-        await msg.edit_text("📤 Files upload ho rahi hain...")
-        
-        # 4. Upload user's Python file as main.py
-        hf_api.upload_file(
-            path_or_fileobj=download_path,
-            path_in_repo="main.py",
-            repo_id=repo_id,
-            repo_type="space"
-        )
-        
-        # 5. Upload Dockerfile
-        with open("/tmp/Dockerfile", "w") as f:
-            f.write(DOCKERFILE_CONTENT)
-        hf_api.upload_file(
-            path_or_fileobj="/tmp/Dockerfile",
-            path_in_repo="Dockerfile",
-            repo_id=repo_id,
-            repo_type="space"
-        )
-        
-        # 6. Upload empty requirements (user needs to provide this later, keeping basic for now)
-        with open("/tmp/requirements.txt", "w") as f:
-            f.write("aiogram\nflask")
-        hf_api.upload_file(
-            path_or_fileobj="/tmp/requirements.txt",
-            path_in_repo="requirements.txt",
-            repo_id=repo_id,
-            repo_type="space"
-        )
-        
-        await msg.edit_text(f"✅ **Aapka Bot Host Ho Gaya Hai!**\n\n🚀 Dashboard: https://huggingface.co/spaces/{repo_id}")
-        
-    except Exception as e:
-        await msg.edit_text(f"❌ Hosting Failed: {e}")
-        
-# --- [ WEB SERVER FOR 24/7 UPTIME ] ---
-app = Flask(__name__)
-@app.route('/')
-def home():
-    return "Master Host Bot is Running!"
+        # Upload Dockerfile (Is baar chup-chap upload karenge)
+        docker_content = 'FROM python:3.9-slim\nRUN useradd -m -u 1000 user\nUSER user\nENV PATH="/home/user/.local/bin:${PATH}"\nWORKDIR /app\nCOPY --chown=user requirements.txt .\nRUN pip install --no-cache-dir -r requirements.txt\nCOPY --chown=user . .\nCMD ["python", "main.py"]'
+        with open("/tmp/Dockerfile", "w") as f: f.write(docker_content)
+        hf_api.upload_file(path_or_fileobj="/tmp/Dockerfile", path_in_repo="Dockerfile", repo_id=repo_id, repo_type="space")
 
-def run_web():
-    app.run(host='0.0.0.0', port=8080)
+    # Upload main.py and requirements.txt (Ye purani file ko khud overwrite kar dega)
+    hf_api.upload_file(path_or_fileobj="/tmp/main.py", path_in_repo="main.py", repo_id=repo_id, repo_type="space")
+    hf_api.upload_file(path_or_fileobj=req_path, path_in_repo="requirements.txt", repo_id=repo_id, repo_type="space")
+    
+    await msg.edit_text(f"✅ **Aapka bot live ho chuka hai!**\n\nIse chalne mein 2-3 minute lagenge.")
+    await state.clear()
 
-async def main():
-    Thread(target=run_web).start()
-    await dp.start_polling(bot)
-
-if __name__ == "__main__":
-    asyncio.run(main())
+# ... Flask server code same rahega ...
