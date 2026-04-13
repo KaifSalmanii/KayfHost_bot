@@ -3,7 +3,7 @@ import json
 import asyncio
 import urllib.request
 from aiogram import Bot, Dispatcher, types, F
-from aiogram.filters import CommandStart, Command
+from aiogram.filters import CommandStart, Command, StateFilter # <-- Added StateFilter
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 from aiogram.utils.keyboard import InlineKeyboardBuilder, InlineKeyboardButton
@@ -150,8 +150,8 @@ async def start_broadcast(message: types.Message, state: FSMContext):
     await message.reply(f"✅ **Broadcast Finished!**\n\n🟢 Success: {success}\n🔴 Failed: {fail}")
     await state.clear()
 
-# --- [ START & COMMANDS ] ---
-@dp.message(CommandStart())
+# --- [ START COMMAND ] ---
+@dp.message(CommandStart(), StateFilter("*"))
 async def start_cmd(message: types.Message, state: FSMContext):
     await state.clear()
     add_user(str(message.from_user.id))
@@ -163,30 +163,49 @@ async def start_cmd(message: types.Message, state: FSMContext):
     
     await message.reply(f"🔥 **Welcome to KayfHost!**\nDeveloped by Kaif Salmani.\n\nNiche diye gaye options use karein:", reply_markup=get_main_menu())
 
-@dp.message(F.text == "📊 System Status")
-async def sys_status_menu(message: types.Message):
+@dp.callback_query(F.data == "verify_sub")
+async def verify_sub(callback: types.CallbackQuery):
+    if await check_sub(callback.from_user.id): 
+        await callback.message.delete()
+        await callback.message.answer("✅ Verification Successful!", reply_markup=get_main_menu())
+    else: await callback.answer("❌ Pehle join toh kar lo bhai!", show_alert=True)
+
+# --- [ GLOBAL MENU HANDLERS (FIXED WITH StateFilter("*")) ] ---
+@dp.message(F.text == "❌ Cancel", StateFilter("*"))
+async def cancel_action(message: types.Message, state: FSMContext):
+    await state.clear()
+    await message.reply("🚫 Action cancelled. Returning to main menu.", reply_markup=get_main_menu())
+
+@dp.message(F.text == "📊 System Status", StateFilter("*"))
+async def sys_status_menu(message: types.Message, state: FSMContext):
+    await state.clear()
     db = load_db()
     total_bots = sum(len(bots) for bots in db["projects"].values())
-    await message.reply(f"📊 **Cloud Status**\n\n🟢 Server: Online\n🤖 Bots Live: {total_bots}\n💾 Database: Cloud-Synced")
+    await message.reply(f"📊 **Cloud Status**\n\n🟢 Server: Online\n🤖 Bots Live: {total_bots}\n💾 Database: Cloud-Synced\n⚡ Ping: Fast")
 
-@dp.message(F.text == "📖 Guide")
-async def guide_menu(message: types.Message):
+@dp.message(F.text == "📖 Guide", StateFilter("*"))
+async def guide_menu(message: types.Message, state: FSMContext):
+    await state.clear()
     await message.reply("📖 **Guide:**\n\n1. Name project\n2. Send main.py\n3. Send requirements.txt\nDone! KayfHost handles the rest.")
 
-@dp.message(F.text == "💰 Donate")
-async def donate_menu(message: types.Message):
+@dp.message(F.text == "💰 Donate", StateFilter("*"))
+async def donate_menu(message: types.Message, state: FSMContext):
+    await state.clear()
     qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=upi://pay?pa={UPI_ID}"
-    await message.reply_photo(photo=qr_url, caption=f"💰 UPI: {UPI_ID}")
+    await message.reply_photo(photo=qr_url, caption=f"💰 UPI: `{UPI_ID}`")
 
-@dp.message(F.text == "🔗 Useful Links")
-async def links_menu(message: types.Message):
+@dp.message(F.text == "🔗 Useful Links", StateFilter("*"))
+async def links_menu(message: types.Message, state: FSMContext):
+    await state.clear()
     builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="📤 Share Bot", url=f"https://t.me/share/url?url=https://t.me/{BOT_USERNAME}&text=Best%2024/7%20Free%20Bot%20Hosting%20Platform!%20🚀"))
     builder.row(InlineKeyboardButton(text="👨‍💻 Dev", url=DEV_URL), InlineKeyboardButton(text="❓ Help", url=f"https://t.me/{HELP_USER[1:]}"))
     await message.reply("🔗 **Useful Links:**", reply_markup=builder.as_markup())
 
 # --- [ PROJECT MANAGEMENT ] ---
-@dp.message(F.text == "📁 My Projects")
-async def list_projects(message: types.Message):
+@dp.message(F.text == "📁 My Projects", StateFilter("*"))
+async def list_projects(message: types.Message, state: FSMContext):
+    await state.clear()
     user_id = str(message.from_user.id)
     db = load_db()
     if user_id not in db["projects"] or not db["projects"][user_id]:
@@ -203,7 +222,8 @@ async def handle_actions(callback: types.CallbackQuery, state: FSMContext):
     action, proj_name = callback.data.split("_")
     user_id = str(callback.from_user.id)
     db = load_db()
-    repo_id = db["projects"][user_id][proj_name]
+    try: repo_id = db["projects"][user_id][proj_name]
+    except KeyError: return await callback.answer("❌ Project not found.", show_alert=True)
 
     try:
         if action == "del":
@@ -253,8 +273,9 @@ async def deploy_to_cloud(message, p_name, u_id, repo_id, is_new=False):
     except: await prog.edit_text("❌ Deployment Failed.")
 
 # --- [ NEW & UPDATE HANDLERS ] ---
-@dp.message(F.text == "🆕 Create Project")
+@dp.message(F.text == "🆕 Create Project", StateFilter("*"))
 async def start_new(message: types.Message, state: FSMContext):
+    await state.clear()
     await message.reply("📝 Enter Project Name:", reply_markup=get_cancel_menu())
     await state.set_state(ProjectFlow.waiting_for_name)
 
@@ -284,7 +305,6 @@ async def get_req(message: types.Message, state: FSMContext):
     await message.answer("Starting Deployment...", reply_markup=get_main_menu())
     await deploy_to_cloud(message, p_name, u_id, repo_id, is_new=True)
 
-# Update handlers (Upd_py and Upd_req) also included in logic...
 @dp.message(UpdateFlow.waiting_for_py, F.document)
 async def upd_py(message: types.Message, state: FSMContext):
     file = await bot.get_file(message.document.file_id)
