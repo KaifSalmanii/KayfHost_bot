@@ -2,12 +2,13 @@ import os
 import json
 import asyncio
 import urllib.request
+from urllib.error import URLError
 from aiogram import Bot, Dispatcher, types, F
-from aiogram.filters import CommandStart, Command, StateFilter # <-- Added StateFilter
+from aiogram.filters import CommandStart, Command, StateFilter
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 from aiogram.utils.keyboard import InlineKeyboardBuilder, InlineKeyboardButton
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 from huggingface_hub import HfApi
 from flask import Flask
 from threading import Thread
@@ -15,7 +16,7 @@ from threading import Thread
 # --- [ CONFIG & CREDENTIALS ] ---
 TELEGRAM_TOKEN = os.environ.get('BOT_TOKEN')
 HF_TOKEN = os.environ.get('HF_TOKEN')
-ADMIN_ID = os.environ.get('ADMIN_ID', '0') # Render se ID set karein
+ADMIN_ID = os.environ.get('ADMIN_ID', '0')
 CHANNEL_USERNAME = "@kaifsalmaniii"
 UPI_ID = "kaifsalmani@ptyes"
 DEV_URL = "https://kaifsalmani-donation.blogspot.com/?m=1"
@@ -61,6 +62,27 @@ def add_user(user_id):
 
 init_db()
 
+# --- [ 🔴 NEW: ANTI-SLEEP AUTO PINGER ] ---
+async def anti_sleep_engine():
+    """Ye function har 10 min mein saare bots ko ping karega taaki HF unhe sulaye na"""
+    while True:
+        try:
+            db = load_db()
+            for uid, projects in db.get("projects", {}).items():
+                for pname, repo_id in projects.items():
+                    # Generate HF Direct Space URL for Pinging
+                    # Format: username-spacename.hf.space
+                    space_slug = repo_id.split("/")[-1].replace("_", "-")
+                    ping_url = f"https://{user_name}-{space_slug}.hf.space"
+                    try:
+                        urllib.request.urlopen(ping_url, timeout=5)
+                    except Exception:
+                        pass # Ignore errors, the goal is just to hit the server
+        except Exception as e:
+            print(f"Pinger Error: {e}")
+        
+        await asyncio.sleep(600) # Wait 10 minutes
+
 # --- [ FSM STATES ] ---
 class ProjectFlow(StatesGroup):
     waiting_for_name = State()
@@ -100,31 +122,20 @@ def get_cancel_menu():
 
 MENU_BUTTONS = ["🆕 Create Project", "📁 My Projects", "📊 System Status", "📖 Guide", "💰 Donate", "🔗 Useful Links", "❌ Cancel"]
 
-# --- [ ADMIN PANEL BLOCK ] ---
+# --- [ ADMIN PANEL ] ---
 @dp.message(Command("admin"))
 async def admin_panel(message: types.Message):
-    if str(message.from_user.id) != str(ADMIN_ID):
-        return await message.reply("❌ **Unauthorised Access!**\nSirf Kaif Salmani hi is command ko use kar sakte hain.")
-    
+    if str(message.from_user.id) != str(ADMIN_ID): return await message.reply("❌ **Unauthorised Access!**")
     db = load_db()
-    total_users = len(db["users"])
-    total_bots = sum(len(bots) for bots in db["projects"].values())
-    
+    total_users, total_bots = len(db["users"]), sum(len(b) for b in db["projects"].values())
     builder = InlineKeyboardBuilder()
     builder.button(text="📢 Broadcast Message", callback_data="admin_broadcast")
-    
-    stats = (
-        "👑 **KayfHost Admin Panel**\n\n"
-        f"👥 Total Users: {total_users}\n"
-        f"🤖 Total Bots Hosted: {total_bots}\n"
-        "🟢 Status: Server Healthy"
-    )
-    await message.reply(stats, reply_markup=builder.as_markup())
+    await message.reply(f"👑 **Admin Panel**\n👥 Users: {total_users}\n🤖 Bots: {total_bots}", reply_markup=builder.as_markup())
 
 @dp.callback_query(F.data == "admin_broadcast")
 async def ask_broadcast(callback: types.CallbackQuery, state: FSMContext):
     if str(callback.from_user.id) != str(ADMIN_ID): return
-    await callback.message.reply("📝 **Broadcast Logic:**\n\nApna message (text, photo, ya video) niche bhejein. Main ise sabhi users ko bhej dunga.", reply_markup=get_cancel_menu())
+    await callback.message.reply("📝 Broadcast message bhejein:", reply_markup=get_cancel_menu())
     await state.set_state(AdminFlow.waiting_for_broadcast)
     await callback.answer()
 
@@ -132,25 +143,20 @@ async def ask_broadcast(callback: types.CallbackQuery, state: FSMContext):
 async def start_broadcast(message: types.Message, state: FSMContext):
     if message.text == "❌ Cancel":
         await state.clear()
-        return await message.reply("🚫 Broadcast Cancelled.", reply_markup=get_main_menu())
-    
-    db = load_db()
-    users = db["users"]
-    await message.reply(f"🚀 **Broadcasting started...** (Total: {len(users)})", reply_markup=get_main_menu())
-    
+        return await message.reply("🚫 Cancelled.", reply_markup=get_main_menu())
+    users = load_db()["users"]
+    await message.reply(f"🚀 Broadcasting to {len(users)} users...", reply_markup=get_main_menu())
     success, fail = 0, 0
     for uid in users:
         try:
             await message.copy_to(chat_id=uid)
             success += 1
-            await asyncio.sleep(0.1) # Anti-flood protection
-        except:
-            fail += 1
-            
-    await message.reply(f"✅ **Broadcast Finished!**\n\n🟢 Success: {success}\n🔴 Failed: {fail}")
+            await asyncio.sleep(0.1)
+        except: fail += 1
+    await message.reply(f"✅ Finished!\n🟢 Success: {success}\n🔴 Failed: {fail}")
     await state.clear()
 
-# --- [ START COMMAND ] ---
+# --- [ GLOBAL COMMANDS & MENUS ] ---
 @dp.message(CommandStart(), StateFilter("*"))
 async def start_cmd(message: types.Message, state: FSMContext):
     await state.clear()
@@ -159,40 +165,42 @@ async def start_cmd(message: types.Message, state: FSMContext):
         builder = InlineKeyboardBuilder()
         builder.row(InlineKeyboardButton(text="📢 Join Channel", url=f"https://t.me/{CHANNEL_USERNAME[1:]}"))
         builder.row(InlineKeyboardButton(text="✅ Check Joined", callback_data="verify_sub"))
-        return await message.reply("🛑 **Access Denied!**\n\nBot use karne ke liye channel join karein.", reply_markup=builder.as_markup())
-    
-    await message.reply(f"🔥 **Welcome to KayfHost!**\nDeveloped by Kaif Salmani.\n\nNiche diye gaye options use karein:", reply_markup=get_main_menu())
+        return await message.reply("🛑 **Access Denied!**\nJoin channel to use the bot.", reply_markup=builder.as_markup())
+    await message.reply(f"🔥 **Welcome to KayfHost!**\nDeveloped by Kaif Salmani.", reply_markup=get_main_menu())
 
 @dp.callback_query(F.data == "verify_sub")
 async def verify_sub(callback: types.CallbackQuery):
     if await check_sub(callback.from_user.id): 
         await callback.message.delete()
         await callback.message.answer("✅ Verification Successful!", reply_markup=get_main_menu())
-    else: await callback.answer("❌ Pehle join toh kar lo bhai!", show_alert=True)
+    else: await callback.answer("❌ Please join first!", show_alert=True)
 
-# --- [ GLOBAL MENU HANDLERS (FIXED WITH StateFilter("*")) ] ---
 @dp.message(F.text == "❌ Cancel", StateFilter("*"))
 async def cancel_action(message: types.Message, state: FSMContext):
     await state.clear()
-    await message.reply("🚫 Action cancelled. Returning to main menu.", reply_markup=get_main_menu())
+    msg = await message.reply("🚫 Action cancelled.", reply_markup=get_main_menu())
+    asyncio.create_task(delete_after(message, 1))
 
 @dp.message(F.text == "📊 System Status", StateFilter("*"))
 async def sys_status_menu(message: types.Message, state: FSMContext):
     await state.clear()
     db = load_db()
     total_bots = sum(len(bots) for bots in db["projects"].values())
-    await message.reply(f"📊 **Cloud Status**\n\n🟢 Server: Online\n🤖 Bots Live: {total_bots}\n💾 Database: Cloud-Synced\n⚡ Ping: Fast")
+    await message.reply(f"📊 **Cloud Status**\n\n🟢 Server: Online\n🤖 Bots Live: {total_bots}\n⚡ Ping: Fast (Auto-Pinger Active)\n💾 DB: Cloud-Synced")
+    asyncio.create_task(delete_after(message, 1))
 
 @dp.message(F.text == "📖 Guide", StateFilter("*"))
 async def guide_menu(message: types.Message, state: FSMContext):
     await state.clear()
-    await message.reply("📖 **Guide:**\n\n1. Name project\n2. Send main.py\n3. Send requirements.txt\nDone! KayfHost handles the rest.")
+    await message.reply("📖 **Guide:**\n1. You can upload `.py` file OR just paste your code directly in the chat.\n2. We automatically add 24/7 Anti-Sleep pingers to your bot.")
+    asyncio.create_task(delete_after(message, 1))
 
 @dp.message(F.text == "💰 Donate", StateFilter("*"))
 async def donate_menu(message: types.Message, state: FSMContext):
     await state.clear()
     qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=upi://pay?pa={UPI_ID}"
     await message.reply_photo(photo=qr_url, caption=f"💰 UPI: `{UPI_ID}`")
+    asyncio.create_task(delete_after(message, 1))
 
 @dp.message(F.text == "🔗 Useful Links", StateFilter("*"))
 async def links_menu(message: types.Message, state: FSMContext):
@@ -201,11 +209,13 @@ async def links_menu(message: types.Message, state: FSMContext):
     builder.row(InlineKeyboardButton(text="📤 Share Bot", url=f"https://t.me/share/url?url=https://t.me/{BOT_USERNAME}&text=Best%2024/7%20Free%20Bot%20Hosting%20Platform!%20🚀"))
     builder.row(InlineKeyboardButton(text="👨‍💻 Dev", url=DEV_URL), InlineKeyboardButton(text="❓ Help", url=f"https://t.me/{HELP_USER[1:]}"))
     await message.reply("🔗 **Useful Links:**", reply_markup=builder.as_markup())
+    asyncio.create_task(delete_after(message, 1))
 
 # --- [ PROJECT MANAGEMENT ] ---
 @dp.message(F.text == "📁 My Projects", StateFilter("*"))
 async def list_projects(message: types.Message, state: FSMContext):
     await state.clear()
+    asyncio.create_task(delete_after(message, 1))
     user_id = str(message.from_user.id)
     db = load_db()
     if user_id not in db["projects"] or not db["projects"][user_id]:
@@ -215,7 +225,7 @@ async def list_projects(message: types.Message, state: FSMContext):
         builder = InlineKeyboardBuilder()
         builder.row(InlineKeyboardButton(text="▶️ Play", callback_data=f"play_{name}"), InlineKeyboardButton(text="⏸ Pause", callback_data=f"pause_{name}"))
         builder.row(InlineKeyboardButton(text="🔄 Update", callback_data=f"upd_{name}"), InlineKeyboardButton(text="🗑 Delete", callback_data=f"del_{name}"))
-        await message.answer(f"📦 **Project:** {name}", reply_markup=builder.as_markup())
+        await message.answer(f"📦 **Project:** {name}\n🛡️ Protected by Auto-Pinger", reply_markup=builder.as_markup())
 
 @dp.callback_query(F.data.startswith(("pause_", "play_", "del_", "upd_")))
 async def handle_actions(callback: types.CallbackQuery, state: FSMContext):
@@ -239,7 +249,8 @@ async def handle_actions(callback: types.CallbackQuery, state: FSMContext):
             await callback.answer(f"▶️ {proj_name} Starting...")
         elif action == "upd":
             await state.update_data(p_name=proj_name, repo_id=repo_id)
-            await callback.message.answer("🔄 Send new **main.py**:", reply_markup=get_cancel_menu())
+            msg = await callback.message.answer("🔄 **Upload `main.py` file** OR **Paste your python code** below:", reply_markup=get_cancel_menu())
+            await state.update_data(last_msg_id=msg.message_id)
             await state.set_state(UpdateFlow.waiting_for_py)
             await callback.answer()
     except: await callback.answer("Server Error!")
@@ -261,7 +272,7 @@ async def deploy_to_cloud(message, p_name, u_id, repo_id, is_new=False):
 
         await prog.edit_text("📤 Uploading Code: `[🟩🟩🟩🟩🟩🟩⬜⬜⬜⬜] 60%`")
         with open("/tmp/main.py", "r") as f: old_code = f.read()
-        hb = "import threading\nfrom flask import Flask\napp = Flask(__name__)\n@app.route('/')\ndef h(): return 'OK'\nthreading.Thread(target=lambda: app.run(host='0.0.0.0', port=7860), daemon=True).start()\n"
+        hb = "import threading\nfrom flask import Flask\nimport urllib.request\napp = Flask(__name__)\n@app.route('/')\ndef h(): return 'OK'\nthreading.Thread(target=lambda: app.run(host='0.0.0.0', port=7860), daemon=True).start()\n"
         with open("/tmp/main.py", "w") as f: f.write(hb + old_code)
         
         for f_name in ["main.py", "requirements.txt"]:
@@ -269,63 +280,124 @@ async def deploy_to_cloud(message, p_name, u_id, repo_id, is_new=False):
         
         await prog.edit_text("⏳ Booting Server: `[🟩🟩🟩🟩🟩🟩🟩🟩⬜⬜] 80%`")
         await asyncio.sleep(5)
-        await prog.edit_text(f"✅ **SUCCESS!**\n`[🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩] 100%`\n🚀 {p_name} is LIVE!")
-    except: await prog.edit_text("❌ Deployment Failed.")
+        await prog.edit_text(f"✅ **SUCCESS!**\n`[🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩] 100%`\n🚀 '{p_name}' is LIVE 24/7!")
+    except Exception as e: await prog.edit_text(f"❌ Deployment Failed.\nError: {e}")
 
-# --- [ NEW & UPDATE HANDLERS ] ---
+# --- [ NEW PROJECT LOGIC (WITH PASTE CODE FEATURE) ] ---
 @dp.message(F.text == "🆕 Create Project", StateFilter("*"))
 async def start_new(message: types.Message, state: FSMContext):
     await state.clear()
-    await message.reply("📝 Enter Project Name:", reply_markup=get_cancel_menu())
+    asyncio.create_task(delete_after(message, 1)) # Clean user message
+    msg = await message.reply("📝 Enter a unique **Project Name**:", reply_markup=get_cancel_menu())
+    await state.update_data(last_msg_id=msg.message_id)
     await state.set_state(ProjectFlow.waiting_for_name)
 
 @dp.message(ProjectFlow.waiting_for_name)
 async def get_name(message: types.Message, state: FSMContext):
     if message.text in MENU_BUTTONS: return await state.clear()
+    data = await state.get_data()
+    try: await bot.delete_message(message.chat.id, data['last_msg_id'])
+    except: pass
+    asyncio.create_task(delete_after(message, 1))
+
     await state.update_data(p_name=message.text)
-    await message.reply("📤 Send **main.py**:")
+    msg = await message.answer("📤 **Upload `main.py`** file \n\nOR \n\n💻 **Paste your Python code** directly below:", reply_markup=get_cancel_menu())
+    await state.update_data(last_msg_id=msg.message_id)
     await state.set_state(ProjectFlow.waiting_for_py)
 
-@dp.message(ProjectFlow.waiting_for_py, F.document)
+@dp.message(ProjectFlow.waiting_for_py) # Removed F.document to accept text too
 async def get_py(message: types.Message, state: FSMContext):
-    file = await bot.get_file(message.document.file_id)
-    await bot.download_file(file.file_path, "/tmp/main.py")
-    await message.reply("📑 Send **requirements.txt**:")
+    if message.text in MENU_BUTTONS: return await state.clear()
+    data = await state.get_data()
+    try: await bot.delete_message(message.chat.id, data['last_msg_id'])
+    except: pass
+    asyncio.create_task(delete_after(message, 1))
+
+    # Logic to handle File OR Text Paste
+    if message.document:
+        file = await bot.get_file(message.document.file_id)
+        await bot.download_file(file.file_path, "/tmp/main.py")
+    elif message.text:
+        with open("/tmp/main.py", "w") as f: f.write(message.text)
+    else:
+        msg = await message.answer("❌ Invalid format. Please send a File or Text Code.")
+        return await state.update_data(last_msg_id=msg.message_id)
+
+    msg = await message.answer("📑 **Upload `requirements.txt`** file \n\nOR \n\n📋 **Paste your requirements** (e.g., aiogram flask):", reply_markup=get_cancel_menu())
+    await state.update_data(last_msg_id=msg.message_id)
     await state.set_state(ProjectFlow.waiting_for_req)
 
-@dp.message(ProjectFlow.waiting_for_req, F.document)
+@dp.message(ProjectFlow.waiting_for_req) # Removed F.document
 async def get_req(message: types.Message, state: FSMContext):
-    file = await bot.get_file(message.document.file_id)
-    await bot.download_file(file.file_path, "/tmp/requirements.txt")
+    if message.text in MENU_BUTTONS: return await state.clear()
     data = await state.get_data()
+    try: await bot.delete_message(message.chat.id, data['last_msg_id'])
+    except: pass
+    asyncio.create_task(delete_after(message, 1))
+
+    # Logic to handle File OR Text Paste
+    if message.document:
+        file = await bot.get_file(message.document.file_id)
+        await bot.download_file(file.file_path, "/tmp/requirements.txt")
+    elif message.text:
+        with open("/tmp/requirements.txt", "w") as f: f.write(message.text)
+    else:
+        return await message.answer("❌ Invalid format.")
+
     p_name, u_id = data['p_name'], str(message.from_user.id)
-    user_name = hf_api.whoami()['name']
     repo_id = f"{user_name}/u{u_id}-{p_name.replace(' ', '')}"
     await state.clear()
-    await message.answer("Starting Deployment...", reply_markup=get_main_menu())
+    await message.answer("🚀 Triggering Deploy...", reply_markup=get_main_menu())
     await deploy_to_cloud(message, p_name, u_id, repo_id, is_new=True)
 
-@dp.message(UpdateFlow.waiting_for_py, F.document)
+# --- [ UPDATE LOGIC (FILE OR TEXT) ] ---
+@dp.message(UpdateFlow.waiting_for_py)
 async def upd_py(message: types.Message, state: FSMContext):
-    file = await bot.get_file(message.document.file_id)
-    await bot.download_file(file.file_path, "/tmp/main.py")
-    await message.reply("📑 Send new **requirements.txt**:")
+    if message.text in MENU_BUTTONS: return await state.clear()
+    data = await state.get_data()
+    try: await bot.delete_message(message.chat.id, data['last_msg_id'])
+    except: pass
+    asyncio.create_task(delete_after(message, 1))
+
+    if message.document:
+        file = await bot.get_file(message.document.file_id)
+        await bot.download_file(file.file_path, "/tmp/main.py")
+    elif message.text:
+        with open("/tmp/main.py", "w") as f: f.write(message.text)
+
+    msg = await message.answer("📑 **Upload `requirements.txt`** file OR **Paste requirements**:", reply_markup=get_cancel_menu())
+    await state.update_data(last_msg_id=msg.message_id)
     await state.set_state(UpdateFlow.waiting_for_req)
 
-@dp.message(UpdateFlow.waiting_for_req, F.document)
+@dp.message(UpdateFlow.waiting_for_req)
 async def upd_req(message: types.Message, state: FSMContext):
-    file = await bot.get_file(message.document.file_id)
-    await bot.download_file(file.file_path, "/tmp/requirements.txt")
+    if message.text in MENU_BUTTONS: return await state.clear()
     data = await state.get_data()
+    try: await bot.delete_message(message.chat.id, data['last_msg_id'])
+    except: pass
+    asyncio.create_task(delete_after(message, 1))
+
+    if message.document:
+        file = await bot.get_file(message.document.file_id)
+        await bot.download_file(file.file_path, "/tmp/requirements.txt")
+    elif message.text:
+        with open("/tmp/requirements.txt", "w") as f: f.write(message.text)
+
     await state.clear()
-    await message.answer("Updating Cloud...", reply_markup=get_main_menu())
+    await message.answer("🔄 Starting Cloud Update...", reply_markup=get_main_menu())
     await deploy_to_cloud(message, data['p_name'], str(message.from_user.id), data['repo_id'], is_new=False)
 
-# --- [ SERVER ] ---
+# --- [ MAIN SERVER & RUNNER ] ---
 app = Flask(__name__)
 @app.route('/')
-def home(): return "KayfHost Running!"
+def home(): return "KayfHost Master Online!"
+
+async def main():
+    # Start the Anti-Sleep Pinger in background
+    asyncio.create_task(anti_sleep_engine())
+    await dp.start_polling(bot)
 
 if __name__ == "__main__":
     Thread(target=lambda: app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 8080)))).start()
-    asyncio.run(dp.start_polling(bot))
+    asyncio.run(main())
+        
