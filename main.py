@@ -400,4 +400,138 @@ async def get_code(m: types.Message, state: FSMContext):
     if m.document:
         f = await bot.get_file(m.document.file_id)
         await bot.download_file(f.file_path, "/tmp/main.py")
-        with open("/tmp/main.py", "r") a
+        with open("/tmp/main.py", "r") as f_obj: code_content = f_obj.read()
+    elif m.text:
+        code_content = m.text
+        with open("/tmp/main.py", "w") as f_obj: f_obj.write(code_content)
+    else:
+        msg = await m.answer("❌ Invalid.")
+        return await state.update_data(last_msg_id=msg.message_id)
+
+    detected = extract_requirements(code_content)
+    await state.update_data(auto_reqs=detected)
+    
+    b = InlineKeyboardBuilder()
+    if detected:
+        req_str = "\n".join(f"- {r}" for r in detected)
+        b.row(InlineKeyboardButton(text="✅ Use Auto-Detected", callback_data="req_auto"))
+        b.row(InlineKeyboardButton(text="✍️ Manual Upload/Paste", callback_data="req_manual"))
+        msg = await m.answer(f"🧠 **AI Detected Requirements:**\n{req_str}\n\nKya inko use karein?", reply_markup=b.as_markup())
+    else:
+        b.row(InlineKeyboardButton(text="✍️ Provide Requirements", callback_data="req_manual"))
+        b.row(InlineKeyboardButton(text="⏭️ No Requirements", callback_data="req_none"))
+        msg = await m.answer("🧠 No external libraries detected.", reply_markup=b.as_markup())
+        
+    await state.update_data(last_msg_id=msg.message_id)
+    await state.set_state(ProjectFlow.waiting_for_req_choice)
+
+@dp.callback_query(ProjectFlow.waiting_for_req_choice)
+async def req_choice(c: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    try: await c.message.delete()
+    except: pass
+    
+    if c.data == "req_auto":
+        with open("/tmp/requirements.txt", "w") as f: f.write("\n".join(data['auto_reqs']))
+        await finish_creation(c.message, data, str(c.from_user.id))
+    elif c.data == "req_none":
+        with open("/tmp/requirements.txt", "w") as f: f.write("")
+        await finish_creation(c.message, data, str(c.from_user.id))
+    elif c.data == "req_manual":
+        msg = await c.message.answer("📑 **Upload `requirements.txt`** OR **Paste requirements:**")
+        await state.update_data(last_msg_id=msg.message_id)
+        await state.set_state(ProjectFlow.waiting_for_manual_req)
+
+@dp.message(ProjectFlow.waiting_for_manual_req)
+async def manual_req(m: types.Message, state: FSMContext):
+    data = await state.get_data(); asyncio.create_task(delete_after(m, 1))
+    try: await bot.delete_message(m.chat.id, data['last_msg_id'])
+    except: pass
+
+    if m.document:
+        f = await bot.get_file(m.document.file_id)
+        await bot.download_file(f.file_path, "/tmp/requirements.txt")
+    elif m.text:
+        with open("/tmp/requirements.txt", "w") as f: f.write(m.text)
+    
+    await finish_creation(m, data, str(m.from_user.id))
+
+async def finish_creation(m, data, uid):
+    pname, buser = data['pname'], data['buser']
+    repo_id = f"{user_name}/u{uid}-{pname.replace(' ', '')}"
+    await deploy_to_cloud(m, pname, uid, repo_id, bot_user=buser, is_new=True)
+
+# --- [ UPDATE LOGIC REPEATED FOR UPDATES ] ---
+@dp.message(UpdateFlow.waiting_for_code)
+async def upd_code(m: types.Message, state: FSMContext):
+    data = await state.get_data(); asyncio.create_task(delete_after(m, 1))
+    try: await bot.delete_message(m.chat.id, data['last_msg_id'])
+    except: pass
+
+    code_content = ""
+    if m.document:
+        f = await bot.get_file(m.document.file_id)
+        await bot.download_file(f.file_path, "/tmp/main.py")
+        with open("/tmp/main.py", "r") as f_obj: code_content = f_obj.read()
+    elif m.text:
+        code_content = m.text
+        with open("/tmp/main.py", "w") as f_obj: f_obj.write(code_content)
+
+    detected = extract_requirements(code_content)
+    await state.update_data(auto_reqs=detected)
+    b = InlineKeyboardBuilder()
+    if detected:
+        req_str = "\n".join(f"- {r}" for r in detected)
+        b.row(InlineKeyboardButton(text="✅ Auto-Detect", callback_data="ureq_auto"), InlineKeyboardButton(text="✍️ Manual", callback_data="ureq_manual"))
+        msg = await m.answer(f"🧠 Detected:\n{req_str}\n\nUse this?", reply_markup=b.as_markup())
+    else:
+        b.row(InlineKeyboardButton(text="✍️ Manual", callback_data="ureq_manual"), InlineKeyboardButton(text="⏭️ None", callback_data="ureq_none"))
+        msg = await m.answer("🧠 No libs detected.", reply_markup=b.as_markup())
+    
+    await state.update_data(last_msg_id=msg.message_id)
+    await state.set_state(UpdateFlow.waiting_for_req_choice)
+
+@dp.callback_query(UpdateFlow.waiting_for_req_choice)
+async def ureq_choice(c: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    try: await c.message.delete()
+    except: pass
+    
+    if c.data == "ureq_auto":
+        with open("/tmp/requirements.txt", "w") as f: f.write("\n".join(data['auto_reqs']))
+        await deploy_to_cloud(c.message, data['pname'], str(c.from_user.id), data['repo_id'], is_new=False)
+    elif c.data == "ureq_none":
+        with open("/tmp/requirements.txt", "w") as f: f.write("")
+        await deploy_to_cloud(c.message, data['pname'], str(c.from_user.id), data['repo_id'], is_new=False)
+    elif c.data == "ureq_manual":
+        msg = await c.message.answer("📑 Upload OR Paste Requirements:")
+        await state.update_data(last_msg_id=msg.message_id)
+        await state.set_state(UpdateFlow.waiting_for_manual_req)
+
+@dp.message(UpdateFlow.waiting_for_manual_req)
+async def ureq_man(m: types.Message, state: FSMContext):
+    data = await state.get_data(); asyncio.create_task(delete_after(m, 1))
+    try: await bot.delete_message(m.chat.id, data['last_msg_id'])
+    except: pass
+
+    if m.document:
+        f = await bot.get_file(m.document.file_id)
+        await bot.download_file(f.file_path, "/tmp/requirements.txt")
+    elif m.text:
+        with open("/tmp/requirements.txt", "w") as f: f.write(m.text)
+    
+    await deploy_to_cloud(m, data['pname'], str(m.from_user.id), data['repo_id'], is_new=False)
+
+# --- [ SERVER ] ---
+app = Flask(__name__)
+@app.route('/')
+def home(): return "KayfHost Master Online!"
+
+async def main():
+    asyncio.create_task(anti_sleep_engine())
+    await bot.delete_webhook(drop_pending_updates=True) 
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    Thread(target=lambda: app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 8080))), daemon=True).start()
+    asyncio.run(main())
