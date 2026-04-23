@@ -45,7 +45,14 @@ def init_db():
 def load_db():
     if os.path.exists(DB_FILE):
         try:
-            with open(DB_FILE, "r") as f: return json.load(f)
+            with open(DB_FILE, "r") as f: 
+                data = json.load(f)
+                # Purane database ko naye system ke hisaab se auto-fix karna
+                if "settings" not in data: 
+                    data["settings"] = {"force_channel": "@kaifsalmaniii"}
+                if "blocked" not in data: 
+                    data["blocked"] = []
+                return data
         except: pass
     return {"users": [], "projects": {}, "blocked": [], "settings": {"force_channel": "@kaifsalmaniii"}}
 
@@ -112,12 +119,14 @@ async def delete_after(message: types.Message, delay: int):
     except: pass
 
 async def check_sub(user_id):
-    channel = load_db()["settings"].get("force_channel", "")
+    db = load_db()
+    channel = db.get("settings", {}).get("force_channel", "")
     if not channel: return True
     try:
         member = await bot.get_chat_member(chat_id=channel, user_id=user_id)
         return member.status in ['member', 'administrator', 'creator']
     except: return False
+
 
 def get_main_menu():
     kb = [[KeyboardButton(text="🆕 Create Project"), KeyboardButton(text="📁 My Projects")],
