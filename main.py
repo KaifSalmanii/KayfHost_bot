@@ -47,11 +47,8 @@ def load_db():
         try:
             with open(DB_FILE, "r") as f: 
                 data = json.load(f)
-                # Purane database ko naye system ke hisaab se auto-fix karna
-                if "settings" not in data: 
-                    data["settings"] = {"force_channel": "@kaifsalmaniii"}
-                if "blocked" not in data: 
-                    data["blocked"] = []
+                if "settings" not in data: data["settings"] = {"force_channel": "@kaifsalmaniii"}
+                if "blocked" not in data: data["blocked"] = []
                 return data
         except: pass
     return {"users": [], "projects": {}, "blocked": [], "settings": {"force_channel": "@kaifsalmaniii"}}
@@ -127,7 +124,6 @@ async def check_sub(user_id):
         return member.status in ['member', 'administrator', 'creator']
     except: return False
 
-
 def get_main_menu():
     kb = [[KeyboardButton(text="🆕 Create Project"), KeyboardButton(text="📁 My Projects")],
           [KeyboardButton(text="📊 System Status"), KeyboardButton(text="📖 Guide")],
@@ -139,15 +135,7 @@ def get_cancel_menu():
 
 MENU_BTNS = ["🆕 Create Project", "📁 My Projects", "📊 System Status", "📖 Guide", "💰 Donate", "🔗 Useful Links", "❌ Cancel"]
 
-# --- [ MIDDLEWARE-LIKE BLOCK CHECK ] ---
-@dp.message(F.text.in_(MENU_BTNS), StateFilter("*"))
-async def check_block_menu(message: types.Message, state: FSMContext):
-    if is_blocked(message.from_user.id):
-        await message.reply("🚫 **BANNED:** You have been blocked by the Admin.")
-        return False
-    return True # Continue handling
-
-# --- [ ADMIN PANEL (SUPER CONTROL) ] ---
+# --- [ ADMIN PANEL ] ---
 @dp.message(Command("admin"))
 async def admin_panel(message: types.Message):
     if str(message.from_user.id) != str(ADMIN_ID): return
@@ -261,7 +249,7 @@ async def cancel_action(m: types.Message, state: FSMContext):
 
 @dp.message(F.text == "📊 System Status", StateFilter("*"))
 async def sys_status_menu(m: types.Message, state: FSMContext):
-    if is_blocked(m.from_user.id): return
+    if is_blocked(m.from_user.id): return await m.reply("🚫 BANNED.")
     await state.clear(); db = load_db()
     bots = sum(len(b) for b in db["projects"].values())
     await m.reply(f"📊 **Cloud Status**\n🟢 Server: Online\n🤖 Bots Live: {bots}\n⚡ Ping: Ultra-Fast (Anti-Sleep)")
@@ -294,7 +282,7 @@ async def links_menu(m: types.Message, state: FSMContext):
 # --- [ PROJECT MANAGEMENT & LOG VIEWER ] ---
 @dp.message(F.text == "📁 My Projects", StateFilter("*"))
 async def list_projects(m: types.Message, state: FSMContext):
-    if is_blocked(m.from_user.id): return
+    if is_blocked(m.from_user.id): return await m.reply("🚫 BANNED.")
     await state.clear(); asyncio.create_task(delete_after(m, 1))
     db = load_db(); uid = str(m.from_user.id)
     if uid not in db["projects"] or not db["projects"][uid]: return await m.reply("❌ No active projects.")
@@ -351,19 +339,16 @@ async def deploy_to_cloud(m, pname, uid, repo_id, bot_user="", is_new=False):
             if uid not in db["projects"]: db["projects"][uid] = {}
             db["projects"][uid][pname] = {"repo_id": repo_id, "bot_username": bot_user}
             save_db(db)
-            # Docker runs run.py (The Wrapper) instead of main.py
             docker = 'FROM python:3.9-slim\nWORKDIR /app\nCOPY requirements.txt .\nRUN pip install --no-cache-dir -r requirements.txt flask\nCOPY . .\nEXPOSE 7860\nCMD ["python", "run.py"]'
             with open("/tmp/Dockerfile", "w") as f: f.write(docker)
             hf_api.upload_file(path_or_fileobj="/tmp/Dockerfile", path_in_repo="Dockerfile", repo_id=repo_id, repo_type="space")
 
         await prog.edit_text("📤 Uploading Code Engine: `[🟩🟩🟩🟩🟩🟩⬜⬜⬜⬜] 60%`")
         
-        # --- THE MAGIC WRAPPER (Solves Zombie State) ---
         wrapper_code = """import threading\nfrom flask import Flask\nimport traceback\nimport time\nimport sys\n
 app = Flask(__name__)\n@app.route('/')\ndef h(): return 'OK'\nthreading.Thread(target=lambda: app.run(host='0.0.0.0', port=7860), daemon=True).start()\n
 try:\n    import main\nexcept Exception as e:\n    with open("error.log", "w") as f: f.write(traceback.format_exc())\n    while True: time.sleep(3600)"""
         with open("/tmp/run.py", "w") as f: f.write(wrapper_code)
-        # Empty error log initially
         with open("/tmp/error.log", "w") as f: f.write("System Started Clean.")
         
         for f_name in ["main.py", "requirements.txt", "run.py", "error.log"]:
@@ -377,7 +362,7 @@ try:\n    import main\nexcept Exception as e:\n    with open("error.log", "w") a
 # --- [ NEW PROJECT STEP-BY-STEP (Auto-Req & Cleanup) ] ---
 @dp.message(F.text == "🆕 Create Project", StateFilter("*"))
 async def start_new(m: types.Message, state: FSMContext):
-    if is_blocked(m.from_user.id): return
+    if is_blocked(m.from_user.id): return await m.reply("🚫 BANNED.")
     await state.clear(); asyncio.create_task(delete_after(m, 1))
     msg = await m.reply("📝 Step 1: Project ka **Naam** batayein:", reply_markup=get_cancel_menu())
     await state.update_data(last_msg_id=msg.message_id)
@@ -385,6 +370,7 @@ async def start_new(m: types.Message, state: FSMContext):
 
 @dp.message(ProjectFlow.waiting_for_name)
 async def get_name(m: types.Message, state: FSMContext):
+    if m.text in MENU_BTNS: return await state.clear()
     data = await state.get_data(); asyncio.create_task(delete_after(m, 1))
     try: await bot.delete_message(m.chat.id, data['last_msg_id'])
     except: pass
@@ -414,138 +400,4 @@ async def get_code(m: types.Message, state: FSMContext):
     if m.document:
         f = await bot.get_file(m.document.file_id)
         await bot.download_file(f.file_path, "/tmp/main.py")
-        with open("/tmp/main.py", "r") as f_obj: code_content = f_obj.read()
-    elif m.text:
-        code_content = m.text
-        with open("/tmp/main.py", "w") as f_obj: f_obj.write(code_content)
-    else:
-        msg = await m.answer("❌ Invalid.")
-        return await state.update_data(last_msg_id=msg.message_id)
-
-    # AUTO REQUIREMENT LOGIC
-    detected = extract_requirements(code_content)
-    await state.update_data(auto_reqs=detected)
-    
-    b = InlineKeyboardBuilder()
-    if detected:
-        req_str = "\n".join(f"- {r}" for r in detected)
-        b.row(InlineKeyboardButton(text="✅ Use Auto-Detected", callback_data="req_auto"))
-        b.row(InlineKeyboardButton(text="✍️ Manual Upload/Paste", callback_data="req_manual"))
-        msg = await m.answer(f"🧠 **AI Detected Requirements:**\n{req_str}\n\nKya inko use karein?", reply_markup=b.as_markup())
-    else:
-        b.row(InlineKeyboardButton(text="✍️ Provide Requirements", callback_data="req_manual"))
-        b.row(InlineKeyboardButton(text="⏭️ No Requirements", callback_data="req_none"))
-        msg = await m.answer("🧠 No external libraries detected.", reply_markup=b.as_markup())
-        
-    await state.update_data(last_msg_id=msg.message_id)
-    await state.set_state(ProjectFlow.waiting_for_req_choice)
-
-@dp.callback_query(ProjectFlow.waiting_for_req_choice)
-async def req_choice(c: types.CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-    try: await c.message.delete()
-    except: pass
-    
-    if c.data == "req_auto":
-        with open("/tmp/requirements.txt", "w") as f: f.write("\n".join(data['auto_reqs']))
-        await finish_creation(c.message, data, str(c.from_user.id))
-    elif c.data == "req_none":
-        with open("/tmp/requirements.txt", "w") as f: f.write("")
-        await finish_creation(c.message, data, str(c.from_user.id))
-    elif c.data == "req_manual":
-        msg = await c.message.answer("📑 **Upload `requirements.txt`** OR **Paste requirements:**")
-        await state.update_data(last_msg_id=msg.message_id)
-        await state.set_state(ProjectFlow.waiting_for_manual_req)
-
-@dp.message(ProjectFlow.waiting_for_manual_req)
-async def manual_req(m: types.Message, state: FSMContext):
-    data = await state.get_data(); asyncio.create_task(delete_after(m, 1))
-    try: await bot.delete_message(m.chat.id, data['last_msg_id'])
-    except: pass
-
-    if m.document:
-        f = await bot.get_file(m.document.file_id)
-        await bot.download_file(f.file_path, "/tmp/requirements.txt")
-    elif m.text:
-        with open("/tmp/requirements.txt", "w") as f: f.write(m.text)
-    
-    await finish_creation(m, data, str(m.from_user.id))
-
-async def finish_creation(m, data, uid):
-    pname, buser = data['pname'], data['buser']
-    repo_id = f"{user_name}/u{uid}-{pname.replace(' ', '')}"
-    await deploy_to_cloud(m, pname, uid, repo_id, bot_user=buser, is_new=True)
-
-# --- [ UPDATE LOGIC REPEATED FOR UPDATES ] ---
-@dp.message(UpdateFlow.waiting_for_code)
-async def upd_code(m: types.Message, state: FSMContext):
-    data = await state.get_data(); asyncio.create_task(delete_after(m, 1))
-    try: await bot.delete_message(m.chat.id, data['last_msg_id'])
-    except: pass
-
-    code_content = ""
-    if m.document:
-        f = await bot.get_file(m.document.file_id)
-        await bot.download_file(f.file_path, "/tmp/main.py")
-        with open("/tmp/main.py", "r") as f_obj: code_content = f_obj.read()
-    elif m.text:
-        code_content = m.text
-        with open("/tmp/main.py", "w") as f_obj: f_obj.write(code_content)
-
-    detected = extract_requirements(code_content)
-    await state.update_data(auto_reqs=detected)
-    b = InlineKeyboardBuilder()
-    if detected:
-        req_str = "\n".join(f"- {r}" for r in detected)
-        b.row(InlineKeyboardButton(text="✅ Auto-Detect", callback_data="ureq_auto"), InlineKeyboardButton(text="✍️ Manual", callback_data="ureq_manual"))
-        msg = await m.answer(f"🧠 Detected:\n{req_str}\n\nUse this?", reply_markup=b.as_markup())
-    else:
-        b.row(InlineKeyboardButton(text="✍️ Manual", callback_data="ureq_manual"), InlineKeyboardButton(text="⏭️ None", callback_data="ureq_none"))
-        msg = await m.answer("🧠 No libs detected.", reply_markup=b.as_markup())
-    
-    await state.update_data(last_msg_id=msg.message_id)
-    await state.set_state(UpdateFlow.waiting_for_req_choice)
-
-@dp.callback_query(UpdateFlow.waiting_for_req_choice)
-async def ureq_choice(c: types.CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-    try: await c.message.delete()
-    except: pass
-    
-    if c.data == "ureq_auto":
-        with open("/tmp/requirements.txt", "w") as f: f.write("\n".join(data['auto_reqs']))
-        await deploy_to_cloud(c.message, data['pname'], str(c.from_user.id), data['repo_id'], is_new=False)
-    elif c.data == "ureq_none":
-        with open("/tmp/requirements.txt", "w") as f: f.write("")
-        await deploy_to_cloud(c.message, data['pname'], str(c.from_user.id), data['repo_id'], is_new=False)
-    elif c.data == "ureq_manual":
-        msg = await c.message.answer("📑 Upload OR Paste Requirements:")
-        await state.update_data(last_msg_id=msg.message_id)
-        await state.set_state(UpdateFlow.waiting_for_manual_req)
-
-@dp.message(UpdateFlow.waiting_for_manual_req)
-async def ureq_man(m: types.Message, state: FSMContext):
-    data = await state.get_data(); asyncio.create_task(delete_after(m, 1))
-    try: await bot.delete_message(m.chat.id, data['last_msg_id'])
-    except: pass
-
-    if m.document:
-        f = await bot.get_file(m.document.file_id)
-        await bot.download_file(f.file_path, "/tmp/requirements.txt")
-    elif m.text:
-        with open("/tmp/requirements.txt", "w") as f: f.write(m.text)
-    
-    await deploy_to_cloud(m, data['pname'], str(m.from_user.id), data['repo_id'], is_new=False)
-
-# --- [ SERVER ] ---
-app = Flask(__name__)
-@app.route('/')
-def home(): return "KayfHost Master Online!"
-
-async def main():
-    asyncio.create_task(anti_sleep_engine())
-    await dp.start_polling(bot)
-
-if __name__ == "__main__":
-    Thread(target=lambda: app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 8080)))).start()
-    asyncio.run(main())
+        with open("/tmp/main.py", "r") a
